@@ -73,6 +73,7 @@ public:
     , m_f(f)
     , m_geomType(type)
     , m_zoomLevel(zoomLevel)
+    , m_areaDepth(0)
   {
     m_rules.reserve(keyCount);
     Init();
@@ -104,8 +105,17 @@ private:
   void ProcessKey(drule::Key const & key)
   {
     double depth = key.m_priority;
+
+    // Prioritize background areas by their sizes instead of style-set priorities.
+    // Foreground areas continue to use priorities to be orderable inbetween lines.
+    if (depth <= kMinLinesDepth && IsTypeOf(key, Area))
+      depth = m_areaDepth;
+
     if (m_featureLayer != feature::LAYER_EMPTY)
     {
+      // @todo layers are applicable relative to intersecting features only
+      // (atm layer correction changes feature's priority against ALL other features);
+      // and the current implementation is dependent on a stable priorities range.
       if (IsTypeOf(key, Line))
       {
         double const layerPart = m_featureLayer * drule::layer_base_priority;
@@ -114,7 +124,7 @@ private:
       }
       else if (IsTypeOf(key, Area))
       {
-        // Area styles have big negative priorities (like -15000), so just add layer correction.
+        // Background areas have big negative priorities (-13000, -8000), so just add layer correction.
         depth += m_featureLayer * drule::layer_base_priority;
       }
       else
@@ -144,21 +154,34 @@ private:
   void Init()
   {
     m_featureLayer = m_f.GetLayer();
-    // @todo m_priorityModifier is not used, try to apply to areas to render in size order.
-    if (m_geomType == feature::GeomType::Point)
-      m_priorityModifier = (double)m_f.GetPopulation() / 7E9;
-    else
+    if (m_geomType == feature::GeomType::Area)
     {
+      // Calculate depth based on areas' sizes instead of style-set priorities.
       m2::RectD const r = m_f.GetLimitRect(m_zoomLevel);
-      m_priorityModifier = std::min(1.0, r.SizeX() * r.SizeY() * 10000.0);
+
+      // Raw areas' size range of about (1e-10, 3000) is too big, have to shrink it.
+      double const areaSize = r.SizeX() * r.SizeY();
+      // log2() of numbers <1.0 is negative, adjust it to be positive.
+      double const minLog2 = std::log2(std::numeric_limits<float>::min()); // == -126
+      double const areaSizeCompact = std::log2(areaSize) - minLog2;
+      // Should be well below lines and foreground areas for the layering logic to work correctly,
+      // produces a depth range of about (-13000, -8000).
+      m_areaDepth = kMinLinesDepth - areaSizeCompact * 100.0f;
+
+      // +/-20000 seems to be depth limits imposed by OpenGL (?) out of which areas won't render.
+      double const minDepth = -20000.0f;
+      ASSERT_GREATER_OR_EQUAL(m_areaDepth, minDepth, (m_areaDepth));
     }
   }
 
   FeatureType & m_f;
   feature::GeomType m_geomType;
   int const m_zoomLevel;
-  double m_priorityModifier;
   int m_featureLayer;
+  double m_areaDepth;
+
+  // Should be same as in kothic.
+  double const kMinLinesDepth = 999.0f;
 };
 }  // namespace
 
